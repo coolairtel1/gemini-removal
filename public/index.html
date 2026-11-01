@@ -140,7 +140,10 @@
   <div class="list">
     <div class="toolbar" id="toolbar" hidden>
       <span id="activeCount"></span>
-      <button class="btn-ghost" id="cancelAll" type="button">Hủy tất cả</button>
+      <div class="actions">
+        <button class="btn-ghost" id="cancelAll" type="button" hidden>Hủy tất cả</button>
+        <a class="btn" id="downloadAll" hidden>Tải tất cả</a>
+      </div>
     </div>
     <div class="list" id="list" style="margin:0"></div>
   </div>
@@ -230,11 +233,25 @@ function makeCard(file) {
 const activeJobs = new Map();
 const isActive = (job) => job.status === 'queued' || job.status === 'processing';
 
+// id của các file đã xử lý xong, theo thứ tự hoàn thành
+const doneJobs = new Set();
+
 function refreshToolbar() {
-  const n = activeJobs.size;
-  $('#toolbar').hidden = n === 0;
-  $('#activeCount').textContent = `Đang xử lý ${n} video`;
-  $('#cancelAll').disabled = false;
+  const active = activeJobs.size;
+  const done = doneJobs.size;
+  $('#toolbar').hidden = active === 0 && done === 0;
+  $('#activeCount').textContent = [
+    active ? `Đang xử lý ${active} video` : '',
+    done ? `${done} file đã xong` : ''
+  ].filter(Boolean).join(' · ');
+  $('#cancelAll').hidden = active === 0;
+  if (active === 0) $('#cancelAll').disabled = false;
+  const dl = $('#downloadAll');
+  dl.hidden = done === 0;
+  dl.textContent = done > 1 ? `Tải tất cả (${done})` : 'Tải về';
+  dl.href = done === 1
+    ? `/api/result/${[...doneJobs][0]}?download`
+    : `/api/download-all?ids=${[...doneJobs].join(',')}`;
 }
 
 $('#cancelAll').addEventListener('click', async () => {
@@ -251,6 +268,7 @@ function setStatus(card, job) {
     : job.status === 'done' ? (job.applied === false ? ' warn' : ' ok') : '');
   if (job.id) {
     if (isActive(job)) activeJobs.set(job.id, card); else activeJobs.delete(job.id);
+    if (job.status === 'done') doneJobs.add(job.id);
     refreshToolbar();
   }
   const cancel = $('.cancel', card);

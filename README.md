@@ -15,7 +15,7 @@ Giao diện web chạy trên máy để dùng engine [GargantuaX/gemini-watermar
 
 ## Dùng
 Kéo thả ảnh (PNG/JPG/WEBP) hoặc video (MP4/WEBM/MOV) vào trang. Ảnh có thanh trượt so sánh trước/sau.
-Kết quả tải về bằng nút **Tải về** và được lưu luôn trong `output/`.
+Kết quả tải về bằng nút **Tải về** (từng file) hoặc **Tải tất cả** (gộp thành một file .zip), và được lưu luôn trong `output/`.
 
 ## Cấu trúc
 - `server.mjs` — server Node (không framework). Ảnh xử lý trực tiếp bằng SDK + `sharp`;

@@ -4,6 +4,7 @@ import http from 'node:http';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { spawn } from 'node:child_process';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -199,6 +200,82 @@ function sendFile(res, filePath, { contentType, downloadName } = {}) {
   createReadStream(filePath).on('error', () => res.end()).pipe(res);
 }
 
+// Ghi file ZIP kiểu "store" (không nén — ảnh/video đã nén sẵn) thẳng ra response.
+async function sendZip(res, entries, zipName) {
+  res.writeHead(200, {
+    'content-type': 'application/zip',
+    'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(zipName)}`
+  });
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const central = [];
+  let offset = 0;
+  const write = (buf) => new Promise((resolve) => {
+    offset += buf.length;
+    if (res.write(buf)) resolve(); else res.once('drain', resolve);
+  });
+
+  for (const { filePath, name } of entries) {
+    const data = await readFile(filePath);
+    const nameBuf = Buffer.from(name, 'utf8');
+    const crc = zlib.crc32(data);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x0800, 6); // tên file UTF-8
+    header.writeUInt16LE(0, 8);
+    header.writeUInt16LE(dosTime, 10);
+    header.writeUInt16LE(dosDate, 12);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(data.length, 18);
+    header.writeUInt32LE(data.length, 22);
+    header.writeUInt16LE(nameBuf.length, 26);
+    header.writeUInt16LE(0, 28);
+
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(0x0800, 8);
+    entry.writeUInt16LE(0, 10);
+    entry.writeUInt16LE(dosTime, 12);
+    entry.writeUInt16LE(dosDate, 14);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(data.length, 20);
+    entry.writeUInt32LE(data.length, 24);
+    entry.writeUInt16LE(nameBuf.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    central.push(entry, nameBuf);
+
+    await write(header);
+    await write(nameBuf);
+    await write(data);
+  }
+
+  const centralStart = offset;
+  for (const buf of central) await write(buf);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(offset - centralStart, 12);
+  end.writeUInt32LE(centralStart, 16);
+  res.end(end);
+}
+
+function uniqueNames(jobsToZip) {
+  const used = new Set();
+  return jobsToZip.map((job) => {
+    const ext = path.extname(job.outputName);
+    const stem = path.basename(job.outputName, ext);
+    let name = job.outputName;
+    for (let i = 2; used.has(name.toLowerCase()); i++) name = `${stem} (${i})${ext}`;
+    used.add(name.toLowerCase());
+    return { filePath: job.outputPath, name };
+  });
+}
+
 function mimeFor(filePath) {
   const video = inferVideoMimeTypeFromPath(filePath);
   return isVideoMimeType(video) ? video : inferMimeTypeFromPath(filePath);
@@ -217,6 +294,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/process') {
       return await handleUpload(req, res, url);
+    }
+    if (req.method === 'GET' && url.pathname === '/api/download-all') {
+      const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean);
+      const done = ids.map((id) => jobs.get(id)).filter((job) => job?.status === 'done');
+      if (done.length === 0) return sendJson(res, 404, { error: 'Không có file nào đã xử lý xong.' });
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+      return await sendZip(res, uniqueNames(done), `gemini-clean-${stamp}.zip`);
     }
     if (req.method === 'POST' && url.pathname === '/api/cancel-all') {
       const cancelled = [...jobs.values()].filter(cancelJob).map((job) => job.id);
